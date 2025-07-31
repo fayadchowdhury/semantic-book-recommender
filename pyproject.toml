@@ -19,7 +19,8 @@ dependencies = [
     "langchain-openai (>=0.3.18,<0.4.0)",
     "langchain-chroma (>=0.2.4,<0.3.0)",
     "transformers (>=4.52.3,<5.0.0)",
-    "gradio (>=5.31.0,<6.0.0)"
+    "gradio (>=5.31.0,<6.0.0)",
+    "ipywidgets (>=8.1.7,<9.0.0)"
 ]
 
 
