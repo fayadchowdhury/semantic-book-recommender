@@ -1,112 +1,119 @@
-import pandas as pd
-import numpy as np
-
-from dotenv import load_dotenv
-
-from langchain_community.document_loaders import TextLoader
-from langchain_text_splitters import CharacterTextSplitter
+from functools import partial
+from processing.extract import read_data, read_data_from_vector_database
+from processing.load import write_data, write_data_to_vector_db
+from processing.transform import remove_null_rows, remove_short_descriptions, join_title_and_subtitle, fix_thumbnail_urls, drop_columns, map_simple_categories, generate_simple_categories, generate_emotions, get_chunks
+from processing.models import generate_category_zero_shot_classifer, generate_emotion_classifier
 from langchain_openai import OpenAIEmbeddings
-from langchain_chroma import Chroma
-
+from langchain_text_splitters import CharacterTextSplitter
+import torch
+import logging
+import os
+from config.logger import setup_logging
+from utils.ui_functions import recommendation_function
 import gradio as gr
 
-# Load env variables
-load_dotenv()
-
-# Data file path
-data_file = "data/cleaned_categorized_emotion_scored_books.csv"
-isbn_description_file = "data/isbn_description.txt"
-
-# Read books data
-books_df = pd.read_csv(data_file)
-
-# Handle thumbnails
-books_df["thumbnail"] = books_df["thumbnail"].apply(
-    lambda x: x + "&fife=w800" if pd.notna(x) else "assets/cover-not-found.jpg"
-)
-
-# Load documents with TextSplitter, split into chunks with CharacterTextSplitter, embed with OpenAIEmbeddings and store in Chroma
-raw_documents = TextLoader(isbn_description_file).load()
+# Setup
+setup_logging()
+embeddings = OpenAIEmbeddings()
 text_splitter = CharacterTextSplitter(chunk_size=0, chunk_overlap=0, separator="\n")
-chunks = text_splitter.split_documents(raw_documents)
-chroma_db_books = Chroma.from_documents(chunks, embedding=OpenAIEmbeddings())
 
-# Function to retrieve semantic recommendations
-def get_semantic_recommendations(
-        query: str,
-        category: str = None,
-        tone: str = None,
-        initial_k: int = 50,
-        final_k: int = 16
-) -> pd.DataFrame:
-    '''
-    Performs similarity search in the Chroma database based on the query and retrieves initial_k results
-    Filters retrieved results by category and tone if specified and selects final_k results
-    '''
+# Constants
+raw_input_data_path = "data/input/books.csv"
+cleaned_data_path = "data/output/cleaned_books.csv"
+categorized_data_path = "data/output/categorized_books.csv"
+categorized_emotion_added_data_path = "data/output/categorized_emotion_added_books.csv"
 
-    initial_recommendations = chroma_db_books.similarity_search_with_score(query, k=initial_k)
-    isbns = [rec[0].page_content.strip('"').split(" ")[0] for rec in initial_recommendations]
-    books_df_filtered = books_df[books_df["isbn10"].isin(isbns)]
+columns_to_check = ['num_pages', 'description', 'average_rating', 'published_year']
+columns_to_drop = ["title", "subtitle"]
 
-    if category != "All":
-        books_df_filtered = books_df_filtered[books_df_filtered["simple_categories"] == category]
+books_categories_map = {
+    "Fiction": "fiction",
+	"Juvenile Fiction": "fiction",
+    "Biography & Autobiography": "non-fiction",
+    "History": "non-fiction",
+    "Literary Criticism": "non-fiction",
+    "Philosophy": "non-fiction",
+    "Religion": "non-fiction",
+    "Comics & Graphic Novels": "fiction",
+    "Drama": "fiction",
+    "Juvenile Nonfiction": "non-fiction",
+    "Science": "non-fiction",
+    "Poetry": "fiction",
+    "Literary Collections":	"fiction"
+}
+
+categories = ["fiction", "non-fiction"]
+category_classifier_model = "facebook/bart-large-mnli"
+
+sentiment_classifier_model = "j-hartmann/emotion-english-distilroberta-base"
+
+vector_db_metadata_columns = ["isbn10", "description", "title_join_subtitle", "authors", "simple_categories", "thumbnail", "published_year", "average_rating", "num_pages", "ratings_count", "fear", "neutral", "sadness", "surprise", "disgust", "joy", "anger"]
+vector_db_dir = "data/output/vector_db"
+
+
+if __name__ == "__main__":
+    logger = logging.getLogger("app")
+
+    # Flow control flags
+    vector_db_found = False
+    categorized_emotion_added_data_found = False
+    cleaned_data_found = False
     
-    tone_mapping = {
-        "Happy": "joy",
-        "Surprising": "surprise",
-        "Angry": "anger",
-        "Suspensful": "fear",
-        "Sad": "sadness",
-        "All": None
-    }
-
-    if tone:
-        mapped_tone = tone_mapping.get(tone)
-        if mapped_tone:
-            books_df_filtered = books_df_filtered.sort_values(by=mapped_tone, ascending=False)
-
-    return books_df_filtered.head(final_k)
-
-# Gradio UI function for recommendations
-def recommendation_function(
-        query: str,
-        category: str = "All",
-        tone: str = "All",
-        initial_k: int = 50,
-        final_k: int = 16
-):
-    recs = get_semantic_recommendations(
-        query=query,
-        category=category,
-        tone=tone,
-        initial_k=initial_k,
-        final_k=final_k
-    )
-
-    results = []
-
-    for _, row in recs.iterrows():
-        title_text = row["title_join_subtitle"]
-        desc_text = row["description"].split()[:30] # Split to get first 30 words
-        desc_text = " ".join(desc_text) + "..." if len(desc_text) == 30 else " ".join(desc_text)
-
-        authors = row["authors"].split(";")
-        authors_text = ""
-        if len(authors) == 2:
-            authors_text = f"{authors[0]} and {authors[1]}"
-        elif len(authors) > 2:
-            authors_text = f"{', '.join(authors[:-1])} and {authors[-1]}"
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    logger.debug(f"Device in use for pytorch models: {device}")
+    
+    # Checks
+    logger.debug(f"Checking to see if vector database exists")
+    if os.path.isdir(vector_db_dir):
+        logger.debug(f"Found vector database, no ETL necessary")
+        logger.debug(f"Reading from vector database directory: {vector_db_dir}")
+        db = read_data_from_vector_database(vector_db_dir, embeddings)
+    else:
+        logger.debug(f"Vector database not found")
+        logger.debug(f"Checking to see if categorized and emotion added data exists")
+        if os.path.isdir(categorized_emotion_added_data_path):
+            logger.debug(f"Found categorized and emotion added data")
+            df = read_data(categorized_emotion_added_data_path)
         else:
-            authors_text = authors[0] if authors else "Unknown"
+            logger.debug(f"Categorized and emotion added data not found")
+            logger.debug(f"Checking to see if cleaned data exists")
+            if os.path.isdir(cleaned_data_path):
+                logger.debug(f"Found cleaned data")
+                df = read_data(cleaned_data_path)
+            else:
+                logger.debug(f"Cleaned data not found")
+                logger.debug(f"Starting basic ETL on data")
+                df = read_data(raw_input_data_path)
+                df = remove_null_rows(df, columns_to_check)
+                df = remove_short_descriptions(df)
+                df = join_title_and_subtitle(df)
+                df = fix_thumbnail_urls(df)
+                df = drop_columns(df, columns_to_drop)
+                df = map_simple_categories(df, books_categories_map)
+                logger.debug(f"Finished basic ETL on data")
+                write_data(df, cleaned_data_path)
+                
+            logger.debug(f"Starting to generate simple categories")
+            category_classifier_pipeline = generate_category_zero_shot_classifer(category_classifier_model, device)
+            generate_simple_categories(df, category_classifier_pipeline, categories)
+            logger.debug(f"Finished generating simple categories")
+            logger.debug(f"Dataframe after generating simple categories:\n{df}")
+            logger.debug(f"Starting to generate emotions")
+            emotion_classifier_pipeline = generate_emotion_classifier(sentiment_classifier_model, device)
+            generate_emotions(df, emotion_classifier_pipeline)
+            logger.debug(f"Finished generating emotions")
+            logger.debug(f"Dataframe after generating emotions:\n{df}")
+            write_data(df, categorized_emotion_added_data_path)
 
-        caption = title_text + " by " + authors_text + ": " + desc_text
+        logger.debug(f"Starting to generate chunks")
+        chunks = get_chunks(df, columns_for_metadata=vector_db_metadata_columns, data_column="description", splitter=text_splitter)
+        logger.debug(f"Finished generating chunks")
+        logger.debug(f"Embedding in vector database")
+        db = write_data_to_vector_db(chunks, vector_db_dir, embeddings)
+        logger.debug(f"Finished embedding in vector database")
 
-        results.append((row["thumbnail"], caption))
-
-    return results
-
-# Generate Gradio interface
-def main():
+    logger.debug(F"Starting Gradio UI")
+    recommendation_function_with_db = partial(recommendation_function, db)
     with gr.Blocks(theme=gr.themes.Default()) as dashboard:
         gr.Markdown("# Book Recommendation System")
         gr.Markdown("### Find your next favorite book based on your mood and preferences!")
@@ -115,7 +122,7 @@ def main():
             query_input = gr.Textbox(label="What are you looking for?", placeholder="e.g. A zombie thriller where the protagonist can only be awake for 20 minutes at a time")
             category_input = gr.Dropdown(
                 label="Fiction, non-fiction, both?",
-                choices=["All"] + sorted(books_df["simple_categories"].unique().tolist()),
+                choices=["All"] + categories,
                 value="All"
             )
             tone_input = gr.Dropdown(
@@ -147,7 +154,7 @@ def main():
         )
 
         submit_button.click(
-            fn=recommendation_function,
+            fn=recommendation_function_with_db,
             inputs=[
                 query_input,
                 category_input,
@@ -159,6 +166,3 @@ def main():
         )
 
     dashboard.launch(server_name="0.0.0.0", server_port=7860)
-
-if __name__ == "__main__":
-    main()
