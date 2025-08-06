@@ -4,6 +4,8 @@ This project uses a vector database (Chroma) to perform similarity search on emb
 
 ![Runtime screenshot](./assets/screenshot.png)
 
+This is based largely on the tutorial [here](https://youtu.be/Q7mS1VHm3Yw?si=ev73DlkrbTk4y8di) with a few changes from my own experimentation! Most if not all credits are due there!
+
 ## Setup and run
 
 Clone the repository using
