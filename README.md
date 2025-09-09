@@ -1,8 +1,6 @@
-# Semantic Book Recommender
+![Runtime screenshot](./assets/featured-image.png)
 
 This project uses a vector database (Chroma) to perform similarity search on embedded book dsecriptions and recommend books accordingly, filtered on the categories of fiction and/or non-fiction and the tone of the description. Throughout the project, as outlined in the notebooks, there are quite a few techniques used commonly in NLP projects, including various forms of data cleaning and augmentation, primary analysis to understand possible bias scopes, zero-shot text classification using pretrained BART and sentiment analysis using fine-tuned DistilRoBERTa. The end result is a Gradio app that can take in a user query and a few parameters like category, emotion etc. to generate a few recommendations.
-
-![Runtime screenshot](./assets/featured-image.png)
 
 This is based largely on the tutorial [here](https://youtu.be/Q7mS1VHm3Yw?si=ev73DlkrbTk4y8di) with a few changes from my own experimentation! Most if not all credits are due there!
 
