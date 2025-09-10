@@ -5,10 +5,12 @@ This project uses a vector database (Chroma) to perform similarity search on emb
 This is based largely on the tutorial [here](https://youtu.be/Q7mS1VHm3Yw?si=ev73DlkrbTk4y8di) with a few changes from my own experimentation! Most if not all credits are due there!
 
 ### TL;DR
-- Cosine similarity on user query and book description embedding vectors
+- LangChain and OpenAI for text chunking and embedding
+- Chroma as persistent vector store and cosine similarities
 - Zero-shot classification of book category using bart-mnli-large
 - Fine-tuned classification of emotion using emotion-english-distilroberta-base
 - Gradio UI for interaction with model output
+- Well-documented, manageable monolithic app
 
 ## Setup and run
 
